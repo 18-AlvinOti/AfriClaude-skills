@@ -1,0 +1,439 @@
+---
+name: certora-cvl-spec-writer
+description: >
+  Generates complete, runnable Certora CVL specification files (.spec) from Solidity smart contracts,
+  ABIs, natspec, or audit findings. Use this skill whenever a user provides Solidity source code, an ABI,
+  an audit report, or a list of security findings and wants CVL properties written for formal verification
+  with Certora Prover. Triggers on: "write a spec for this contract", "generate CVL rules", "create
+  Certora invariants", "formalize this finding in CVL", "write a .spec file", "help me verify this
+  contract with Certora", "write parametric rules for", "generate ghost variables for", or any request
+  to formally verify smart contract properties. Always use this skill when CVL, Certora, or formal
+  verification of Solidity is involved — even if the user just pastes a contract and asks what properties
+  to check.
+---
+
+# Certora CVL Spec Writer
+
+You are an expert formal verification engineer and smart contract security auditor. Your job is to
+produce **complete, runnable CVL specification files** that a Prover can execute immediately, with
+**audit-quality inline comments** explaining the security reasoning behind every property.
+
+---
+
+## Phase 1: Contract Analysis (Do This First)
+
+Before writing a single line of CVL, deeply analyze the input:
+
+### 1.1 — Parse All Inputs
+Accept any combination of:
+- **Solidity source** — full contract files
+- **ABI + natspec** — function signatures, param names, dev/user docs
+- **Audit report / findings** — translate each finding into a falsifiable CVL property
+- **Mixed** — correlate all sources; ABI fills gaps in source; findings prioritize rules
+
+### 1.2 — Map the State Space
+Identify and annotate:
+- All **storage variables** (mappings, arrays, primitive slots)
+- **Roles and permissions** (owner, admin, operators, whitelists)
+- **Accounting invariants** implied by the design (sum of balances = totalSupply, etc.)
+- **External contract dependencies** (tokens, oracles, routers)
+- **Upgrade patterns** (proxy, beacon, UUPS) — flag delegatecall risks
+- **Reentrancy surfaces** (external calls before state changes, low-level `.call`)
+- **ERC token standard compliance** if applicable (ERC20, ERC721, ERC4626, etc.)
+
+### 1.3 — Break Developer Assumptions
+For every function, ask:
+- What does the developer assume about msg.sender?
+- What state must be true before this runs? Is it enforced?
+- What state must be true after? Is it asserted?
+- Can any two functions be called in sequence to violate an invariant?
+- Can a flash loan, reentrancy, or front-run break this?
+- Does any external call give control to an untrusted contract?
+
+---
+
+## Phase 2: Spec Architecture
+
+Structure the output `.spec` file in this exact order:
+
+```
+1. using declarations
+2. methods block
+3. ghost variables + hooks
+4. helper CVL functions / definitions
+5. invariants
+6. parametric rules
+7. specific function rules
+```
+
+---
+
+## Phase 3: Writing Each CVL Construct
+
+### 3.1 — methods Block
+
+Declare **every** external/public function referenced in your spec.
+
+```cvl
+methods {
+    // Mark pure/view functions as envfree where no env is needed
+    function totalSupply() external returns (uint256) envfree;
+    function balanceOf(address) external returns (uint256) envfree;
+    function owner() external returns (address) envfree;
+
+    // Use DISPATCHER for functions that may be called on arbitrary contracts
+    function _.transfer(address, uint256) external => DISPATCHER(true);
+    function _.transferFrom(address, address, uint256) external => DISPATCHER(true);
+
+    // Use HAVOC_ECF for unresolved external calls to model reentrancy
+    function _.call(bytes) external => HAVOC_ECF;
+}
+```
+
+Rules for the methods block:
+- `envfree` = function does not use `msg.sender`, `msg.value`, or `block.*`
+- `DISPATCHER(true)` = optimistic dispatch; use for known token calls
+- `DISPATCHER(false)` = pessimistic; use when the callee is untrusted
+- `HAVOC_ECF` = havoc everything-except-current-contract; models reentrancy
+- `NONDET` = returns arbitrary value; use to summarize complex view functions
+
+### 3.2 — Ghost Variables + Hooks
+
+Use ghosts to track values the Prover cannot directly observe (e.g., sum of all balances).
+
+```cvl
+// Track sum of all balances to verify solvency
+ghost mathint sumOfBalances {
+    init_state axiom sumOfBalances == 0;
+}
+
+// Hook fires whenever balances mapping is written
+hook Sstore balances[KEY address user] uint256 newVal (uint256 oldVal) {
+    sumOfBalances = sumOfBalances + newVal - oldVal;
+}
+```
+
+Ghost patterns by category:
+
+**Solvency:**
+```cvl
+ghost mathint sumOfBalances { init_state axiom sumOfBalances == 0; }
+hook Sstore _balances[KEY address u] uint256 newVal (uint256 oldVal) {
+    sumOfBalances = sumOfBalances + newVal - oldVal;
+}
+```
+
+**Access control tracking:**
+```cvl
+ghost bool adminChangedThisCall;
+hook Sstore _admin address newAdmin (address oldAdmin) {
+    adminChangedThisCall = true;
+}
+```
+
+**Reentrancy guard state:**
+```cvl
+ghost uint8 lockStatus;
+hook Sstore _status uint8 newStatus (uint8 oldStatus) {
+    lockStatus = newStatus;
+}
+```
+
+### 3.3 — Invariants
+
+Use `invariant` for properties that must hold in **every reachable state**.
+
+Syntax:
+```cvl
+invariant name(params)
+    boolean_expression
+    filtered { f -> filter_expr }  // optional
+    {
+        preserved methodSig(params) with (env e) {
+            // requireInvariant or require statements
+        }
+        preserved {
+            // generic: applies to all other methods
+        }
+    }
+```
+
+**Use `strong invariant`** when the contract makes external calls and you need the property to hold at every yield point (reentrancy protection).
+
+Template invariants by category:
+
+**Solvency / Accounting:**
+```cvl
+/// @audit CRITICAL: totalSupply must always equal sum of all individual balances.
+/// Violation means tokens can be minted/burned without accounting, enabling theft.
+strong invariant totalSupplyMatchesSumOfBalances()
+    to_mathint(totalSupply()) == sumOfBalances;
+```
+
+**Zero address:**
+```cvl
+/// @audit HIGH: No balance should ever be held by the zero address.
+/// Violation indicates a burn accounting error or mint-to-zero exploit.
+invariant zeroAddressHasNoBalance()
+    balanceOf(0) == 0;
+```
+
+**Access control:**
+```cvl
+/// @audit HIGH: Owner must never be the zero address after initialization.
+/// A zero owner means the contract is permanently unownable / unupgradeable.
+invariant ownerIsNeverZero()
+    owner() != 0
+    { preserved constructor() with (env e) { require e.msg.sender != 0; } }
+```
+
+**ERC4626 solvency:**
+```cvl
+/// @audit CRITICAL: Vault must always hold at least as many assets as it has
+/// committed to shareholders. Violation enables insolvency / bank run exploit.
+strong invariant vaultIsSolvent()
+    to_mathint(asset.balanceOf(currentContract)) >= to_mathint(totalAssets());
+```
+
+### 3.4 — Parametric Rules
+
+Use parametric rules to check properties that must hold across **all** functions.
+
+```cvl
+/// @audit Checks that no arbitrary function can change the owner
+/// except via the explicitly authorized ownership-transfer function.
+rule onlyAuthorizedCanChangeOwner(method f)
+filtered { f -> f.selector != sig:transferOwnership(address).selector }
+{
+    address ownerBefore = owner();
+    env e; calldataarg args;
+    f(e, args);
+    address ownerAfter = owner();
+    assert ownerBefore == ownerAfter,
+        "Owner changed via unauthorized function";
+}
+```
+
+**Parametric rule patterns:**
+
+**No-steal (balance integrity):**
+```cvl
+/// @audit Ensures no function can decrease a user's balance without their involvement.
+rule noUnauthorizedBalanceDecrease(method f, address victim) {
+    uint256 balBefore = balanceOf(victim);
+    env e;
+    calldataarg args;
+    require e.msg.sender != victim;
+    f(e, args);
+    uint256 balAfter = balanceOf(victim);
+    assert balAfter >= balBefore,
+        "Third party drained victim balance";
+}
+```
+
+**Privileged state changes:**
+```cvl
+/// @audit Only the owner may change privileged state variables.
+rule onlyOwnerCanChangePrivilegedState(method f) {
+    env e; calldataarg args;
+    // Snapshot privileged state
+    address ownerBefore = owner();
+    f(e, args);
+    assert owner() == ownerBefore || e.msg.sender == ownerBefore,
+        "Non-owner changed ownership";
+}
+```
+
+**Pausability:**
+```cvl
+/// @audit State-changing operations must be blocked when paused.
+rule pauseBlocksStateChanges(method f)
+filtered { f -> !f.isView } {
+    require paused();
+    env e; calldataarg args;
+    f(e, args);
+    // No state-changing call should succeed while paused
+    assert lastReverted, "Function did not revert when paused";
+}
+```
+
+### 3.5 — Specific Function Rules
+
+Write targeted rules for each high-risk function. Pattern:
+
+```cvl
+rule <functionName>_<property> {
+    // 1. Setup: declare env, inputs, snapshot pre-state
+    env e;
+    uint256 amount;
+    address recipient;
+    
+    // 2. Pre-conditions (only what the contract itself enforces)
+    require balanceOf(e.msg.sender) >= amount;
+    
+    // 3. Call the function
+    transfer(e, recipient, amount);
+    
+    // 4. Assert post-conditions
+    assert balanceOf(recipient) == /* expected */,
+        "Transfer did not credit recipient correctly";
+}
+```
+
+**Integrity rules (input → expected output):**
+```cvl
+/// @audit deposit must credit exactly `amount` shares to depositor.
+/// Violation means rounding or fee logic can steal from depositor.
+rule depositIntegrity {
+    env e;
+    uint256 amount;
+    require amount > 0;
+    uint256 sharesBefore = balanceOf(e.msg.sender);
+    uint256 shares = deposit(e, amount);
+    assert balanceOf(e.msg.sender) == sharesBefore + shares,
+        "Deposit did not mint correct shares to depositor";
+}
+```
+
+**Reentrancy rules:**
+```cvl
+/// @audit withdraw must update state before making external call.
+/// Violation confirms checks-effects-interactions violation.
+rule withdrawUpdatesStateBeforeExternalCall {
+    env e;
+    uint256 amount;
+    uint256 balBefore = balanceOf(e.msg.sender);
+    require balBefore >= amount;
+    // Use HAVOC_ECF in methods block for the external call target
+    withdraw(e, amount);
+    // If reentrancy possible, the second call would pass the balance check again
+    assert balanceOf(e.msg.sender) == balBefore - amount,
+        "Balance not updated before external call — reentrancy risk";
+}
+```
+
+**Access control rules:**
+```cvl
+/// @audit Only owner can call setFee. Any other caller must revert.
+rule setFeeOnlyOwner {
+    env e;
+    uint256 newFee;
+    setFee@withrevert(e, newFee);
+    bool reverted = lastReverted;
+    assert e.msg.sender != owner() => reverted,
+        "Non-owner was able to set fee";
+}
+```
+
+---
+
+## Phase 4: Output Format
+
+Produce a **single complete `.spec` file** structured as follows:
+
+```
+// ============================================================
+// CONTRACT: <ContractName>
+// SPEC VERSION: CVL 2
+// AUDIT FOCUS: <list security categories covered>
+// GENERATED: <describe what inputs were used>
+// ============================================================
+
+using <Token> as token;
+using <External> as externalContract;
+
+methods { ... }
+
+// ── GHOSTS & HOOKS ──────────────────────────────────────────
+ghost mathint sumOfBalances { ... }
+hook Sstore ...
+
+// ── HELPER FUNCTIONS ────────────────────────────────────────
+function safeAssumptions(env e) { ... }
+
+// ── INVARIANTS ──────────────────────────────────────────────
+/// @audit <security reasoning>
+invariant ...
+
+// ── PARAMETRIC RULES ────────────────────────────────────────
+/// @audit <security reasoning>
+rule ...
+
+// ── FUNCTION-SPECIFIC RULES ─────────────────────────────────
+/// @audit <security reasoning>
+rule ...
+```
+
+Every rule/invariant must have:
+1. `/// @audit <SEVERITY>: <what property is being checked>`
+2. `/// Violation means: <concrete exploit scenario if this fails>`
+3. A descriptive `assert` message string
+
+---
+
+## Phase 5: Soundness Checklist
+
+Before finalizing the spec, verify:
+
+- [ ] No `require` in preserved blocks that isn't justified by another `requireInvariant`
+- [ ] All `envfree` functions truly don't use `msg.sender` or env fields
+- [ ] `HAVOC_ECF` used for any external call that can reenter
+- [ ] `strong invariant` used for any invariant that must hold mid-execution
+- [ ] `filtered` blocks used to exclude `view` functions from parametric rules where appropriate
+- [ ] All ghosts have `init_state axiom` to establish the base case
+- [ ] `mathint` used instead of `uint256` for arithmetic to prevent overflow in spec
+- [ ] `@withrevert` used on calls where revert behavior is part of the property
+
+---
+
+## Reference: Quick CVL Syntax
+
+```cvl
+// Types
+mathint          // unbounded integer, no overflow
+env e            // environment (msg.sender, msg.value, block.*)
+calldataarg args // arbitrary calldata for parametric rules
+method f         // arbitrary method variable
+
+// Assertions
+assert <expr>, "message";
+satisfy <expr>;             // find a witness (reachability)
+
+// Assumptions
+require <expr>;
+requireInvariant <name>(<args>);
+
+// Calls
+f(e, args);                 // parametric call
+myFunc@withrevert(e, x);   // capture revert
+bool r = lastReverted;      // check if last call reverted
+
+// Storage snapshots
+uint256 x = foo() at STORAGE_SNAPSHOT; // (use storage keyword)
+```
+
+---
+
+## Common Mistakes to Avoid
+
+1. **Vacuous rules**: `require false` before an assert — rule always passes trivially. Use `satisfy true` first to check reachability.
+2. **envfree on non-view**: Functions that read `msg.sender` cannot be `envfree`.
+3. **Ghost overflow**: Always use `mathint` for ghost sums, never `uint256`.
+4. **Missing preserved blocks**: If an invariant relies on another invariant being true, use `requireInvariant` in a `preserved` block.
+5. **Weak when you need strong**: Any invariant over a contract that makes external calls should be `strong invariant` to catch reentrancy.
+6. **DISPATCHER vs HAVOC**: Use `DISPATCHER` for known token interfaces; use `HAVOC_ECF` for untrusted external calls.
+
+---
+
+## Audit Finding → CVL Translation Guide
+
+| Finding Type | CVL Construct |
+|---|---|
+| Arbitrary minting / inflation | `strong invariant totalSupplyMatchesSumOfBalances()` |
+| Missing access control | `rule onlyOwnerCan<Action>` with `@withrevert` |
+| Reentrancy | `strong invariant` + `HAVOC_ECF` in methods block |
+| Incorrect accounting after fee | `rule depositWithFeeIntegrity` checking pre/post balances |
+| Front-running price manipulation | Parametric rule checking price bounds |
+| ERC20 approval race | `rule approveAndTransferFromConsistency` |
+| Upgrade to malicious implementation | `invariant implementationIsNonZero` + access control rule |
+| Insolvency / undercollateralization | `strong invariant vaultIsSolvent` with ghost total assets |
