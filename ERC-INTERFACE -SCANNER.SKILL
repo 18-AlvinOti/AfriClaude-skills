@@ -1,0 +1,547 @@
+---
+name: erc-interface-scanner
+description: >
+  Comprehensive security auditor for ALL Ethereum ERC interfaces (Final, Last Call, Review, Draft).
+  Covers ERC-20, ERC-721, ERC-1155, ERC-4626, ERC-2612, ERC-777, ERC-3156, ERC-4337, ERC-6909,
+  ERC-7540, ERC-2535 (Diamonds), ERC-1967 (Proxies), and 100+ more ERC standards.
+  Triggers on: "audit this ERC contract", "check ERC compliance", "find vulnerabilities in this token/vault/NFT/proxy",
+  "review this ERC-20/721/1155/4626/4337", "does this implement the interface correctly", "find high/critical issues".
+  Maps every function flow, breaks developer assumptions, and validates all findings against known ERC-specific attack vectors.
+  Focus: High/Critical findings affecting TVL, loss of funds, unauthorized minting/burning, access control bypass.
+---
+
+# ERC Interface Vulnerability Scanner
+
+## Purpose
+
+Systematically audit smart contracts against their declared ERC interfaces, mapping every transaction flow to uncover **High and Critical vulnerabilities** that could result in:
+
+- Loss of user funds or protocol TVL
+- Unauthorized minting, burning, or transfers
+- Access control bypass
+- Reentrancy and callback exploitation
+- Specification deviations that attackers can weaponize
+- Integration hazards when protocols consume non-standard implementations
+
+**Source Authority**: All vulnerability patterns sourced from the official ERC specifications at https://eips.ethereum.org/erc
+
+---
+
+## Activation
+
+Trigger this skill when:
+- Any ERC-numbered contract is under review
+- A protocol integrates tokens, vaults, NFTs, or proxies
+- Flash loan receivers, permit signatures, or meta-transactions are present
+- Modular accounts (ERC-4337, ERC-6900, ERC-7579) are in scope
+- Cross-chain tokens, bridges, or synchronization patterns are used
+
+---
+
+## Phase 1: ERC Interface Identification
+
+Before auditing, identify every declared interface:
+
+```
+1. Check all `supportsInterface(bytes4)` return values (ERC-165)
+2. Enumerate all inherited interfaces in the contract hierarchy
+3. Map all external/public functions to their ERC origin
+4. Identify ERC combinations (e.g., ERC-20 + ERC-2612 + ERC-777 simultaneously)
+5. Flag "non-standard" overrides that deviate from spec
+```
+
+**Key question**: Does the contract claim an interface it doesn't fully or correctly implement?
+
+---
+
+## Phase 2: ERC-Specific Vulnerability Modules
+
+---
+
+### MODULE 1: ERC-20 — Token Standard
+
+**Interface**: `transfer`, `transferFrom`, `approve`, `allowance`, `balanceOf`, `totalSupply`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E20-C1 | Missing return value on `transfer`/`transferFrom` | Caller assumes success when transfer silently fails | Confirm `bool` returned; check for USDT-style no-return |
+| E20-C2 | Approval race condition | Front-run `approve(spender, newAmount)` to spend both old+new | Is `increaseAllowance`/`decreaseAllowance` provided? |
+| E20-C3 | `transferFrom` skips allowance check when `from == msg.sender` | Bypasses allowance, enabling unauthorized spends | Check: `if (from != msg.sender) _spendAllowance(...)` guard |
+| E20-C4 | Fee-on-transfer not accounted by integrators | Protocol credits more than received | Does `balanceAfter - balanceBefore` measure actual receipt? |
+| E20-C5 | Rebasing token integration | Balance changes without transfer events | Are external `balanceOf` reads cached unsafely? |
+| E20-C6 | Unrestricted `mint`/`burn` | Infinite inflation or theft | Is `mint` behind role guard? Is there a supply cap? |
+| E20-H1 | `permit` (ERC-2612) signature replay across chains | Cross-chain replay steals approvals | Is `block.chainid` in domain separator? Dynamic or cached? |
+| E20-H2 | `permit` with infinite deadline accepted | Phished signatures valid forever | Is `deadline` validated: `require(deadline >= block.timestamp)`? |
+| E20-H3 | Incorrect `DOMAIN_SEPARATOR` caching | Domain separator doesn't update after fork | Is it cached at deploy time or computed dynamically? |
+| E20-H4 | ERC-777 hooks reentrancy | `tokensToSend`/`tokensReceived` re-enters protocol | Are balances updated BEFORE external hook calls? |
+| E20-M1 | Zero-value transfer reverts break integrators | Composability failure | Does `transfer(addr, 0)` revert unexpectedly? |
+| E20-M2 | Transfer to `address(0)` not blocked | Tokens burned without `Burn` event | Is `require(to != address(0))` present? |
+
+#### Transaction Flow Map
+```
+User → approve(spender, amount)
+         ↓
+Spender → transferFrom(user, recipient, amount)
+              ↓ checks: allowance[user][spender] >= amount
+              ↓ checks: balances[user] >= amount
+              ↓ effects: balances updated, allowance decremented
+              ↓ event: Transfer(user, recipient, amount)
+```
+**Break assumption**: What if `amount == type(uint256).max`? Does it skip decrement (OpenZeppelin pattern)?
+
+---
+
+### MODULE 2: ERC-721 — Non-Fungible Token Standard
+
+**Interface**: `ownerOf`, `safeTransferFrom`, `transferFrom`, `approve`, `getApproved`, `setApprovalForAll`, `isApprovedForAll`, `balanceOf`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E721-C1 | `onERC721Received` reentrancy during `safeMint`/`safeTransferFrom` | Reentrancy via receiver callback | Is state finalized before `_checkOnERC721Received`? |
+| E721-C2 | `transferFrom` doesn't clear approval | Old spender retains access after transfer | `delete _tokenApprovals[tokenId]` in transfer path? |
+| E721-C3 | `ownerOf` on non-existent token doesn't revert | Callers assume zero address means valid | Does it `revert` per spec instead of returning `address(0)`? |
+| E721-C4 | Operator approved for all can transfer to themselves | Operator becomes owner without consent | Is `isApprovedForAll(owner, to)` checked as a theft vector? |
+| E721-H1 | Consecutive minting (ERC-2309) without ownership tracking | `ownerOf` wrong during batch | Is ownership array correctly initialized for ranges? |
+| E721-H2 | `tokenId` can be reminted after burn | Ghost tokenId hijacking | Is burned tokenId permanently blacklisted? |
+| E721-H3 | `tokenURI` returns metadata for burned token | Misleads marketplace integrators | Is `_requireOwned(tokenId)` called in `tokenURI`? |
+| E721-M1 | `safeTransferFrom` to contract without receiver | Tokens stuck permanently | Does the receiver return `IERC721Receiver.onERC721Received.selector`? |
+
+#### Transaction Flow Map
+```
+User → safeTransferFrom(from, to, tokenId)
+          ↓ require(ownerOf(tokenId) == from)
+          ↓ require(isAuthorized(msg.sender, tokenId))
+          ↓ _transfer: update ownership, clear approval
+          ↓ emit Transfer(from, to, tokenId)
+          ↓ if (to.code.length > 0): call onERC721Received ← REENTRANCY POINT
+```
+
+---
+
+### MODULE 3: ERC-1155 — Multi-Token Standard
+
+**Interface**: `safeTransferFrom`, `safeBatchTransferFrom`, `balanceOf`, `balanceOfBatch`, `setApprovalForAll`, `isApprovedForAll`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E1155-C1 | `onERC1155Received`/`onERC1155BatchReceived` reentrancy | Re-enter before batch state updates | Are ALL balances updated atomically before callback? |
+| E1155-C2 | Batch transfer partial success | Some IDs transfer, others fail silently | Does batch revert atomically on any failure? |
+| E1155-C3 | ID type confusion (fungible vs NFT) | Treat NFT (supply=1) as fungible | Is per-ID supply tracking enforced? |
+| E1155-H1 | `safeBatchTransferFrom` mismatched array lengths | Undefined behavior, potential griefing | `require(ids.length == amounts.length)` present? |
+| E1155-H2 | Approval for all grants unlimited batch transfer | Single approval drains all token types | Is `setApprovalForAll` subject to any per-token limits? |
+| E1155-M1 | Missing ERC-165 support detection before transfer | Tokens permanently lost in non-receiver contract | `supportsInterface(0xf23a6e61)` checked before transfer? |
+
+---
+
+### MODULE 4: ERC-4626 — Tokenized Vaults
+
+**Interface**: `deposit`, `mint`, `withdraw`, `redeem`, `totalAssets`, `convertToShares`, `convertToAssets`, `maxDeposit`, `maxMint`, `maxWithdraw`, `maxRedeem`, `previewDeposit`, `previewMint`, `previewWithdraw`, `previewRedeem`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E4626-C1 | Inflation attack on first deposit | Attacker donates to vault, first depositor receives near-zero shares | Is virtual shares/assets offset (dead shares) used? |
+| E4626-C2 | `totalAssets` manipulation via direct donation | `exchangeRate` skewed, subsequent depositors robbed | Are `totalAssets` and `totalSupply` snapshot-resistant? |
+| E4626-C3 | Rounding direction — `convertToShares` rounds up for withdrawals | User withdraws more than entitled | Does withdraw path round shares UP (against user)? |
+| E4626-C4 | Reentrancy via `asset.transfer` in `withdraw`/`redeem` | Re-enter before share burn | CEI pattern: burn shares THEN transfer asset |
+| E4626-H1 | `maxWithdraw` doesn't respect liquidity constraints | Integration reverts when actual assets unavailable | Does `maxWithdraw` reflect actual withdrawable liquidity? |
+| E4626-H2 | `preview*` functions deviate from actual execution | Integrators calculate wrong slippage | Are `preview` and actual execution paths identical? |
+| E4626-H3 | Async vault (ERC-7540) — request/claim race | User claims someone else's redemption | Are request IDs scoped per user and validated on claim? |
+| E4626-H4 | Multi-asset vault (ERC-7575) — asset confusion | Wrong asset priced for share calculation | Is asset-to-share rate per-asset or shared? |
+| E4626-M1 | `deposit` to different `receiver` than `msg.sender` | Griefing: attacker frontruns deposit at bad rate | Is slippage protection (`minSharesOut`) available? |
+
+#### Transaction Flow Map
+```
+User → deposit(assets, receiver)
+         ↓ shares = previewDeposit(assets)  ← rounding check
+         ↓ asset.transferFrom(msg.sender, vault, assets)  ← fee-on-transfer?
+         ↓ _mint(receiver, shares)
+         ↓ emit Deposit(msg.sender, receiver, assets, shares)
+         
+BREAK: What if asset has fee-on-transfer? vault receives less than `assets`,
+       but mints shares based on `assets` → inflation of share price → all future depositors robbed
+```
+
+---
+
+### MODULE 5: ERC-2612 — Permit (ERC-20 Signed Approvals)
+
+**Interface**: `permit(owner, spender, value, deadline, v, r, s)`, `nonces(owner)`, `DOMAIN_SEPARATOR()`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E2612-C1 | Signature replay on different chain | Approval stolen cross-chain | Is `chainid` dynamic in `DOMAIN_SEPARATOR`? |
+| E2612-C2 | Griefing: front-run `permit` with same sig | Bumps nonce, causes legitimate tx to fail | Protocol must handle `permit` revert gracefully |
+| E2612-C3 | `permit` for `type(uint256).max` value + no expiry check | Permanent unlimited approval via phishing | Does protocol warn/limit max-value permits? |
+| E2612-H1 | Domain separator uses name at deploy, not current | Name change breaks all permits | Is `keccak256(name)` recomputed per call? |
+| E2612-H2 | `ecrecover` returns `address(0)` on malformed sig | Zero-address becomes approved spender | `require(signer != address(0))` present? |
+| E2612-H3 | `permit` doesn't revert on wrong `v` value | Signature malleable | Is `v` checked to be 27 or 28? |
+
+---
+
+### MODULE 6: ERC-3156 — Flash Loans
+
+**Interface**: `flashLoan(receiver, token, amount, data)`, `flashFee(token, amount)`, `maxFlashLoan(token)`, `onFlashLoan(initiator, token, amount, fee, data)`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E3156-C1 | Callback `initiator` not validated | Malicious lender triggers arbitrary callback | `require(initiator == trustedLender)` in `onFlashLoan`? |
+| E3156-C2 | Return value of `onFlashLoan` not checked | Lender assumes success without confirmation | `require(receiver.onFlashLoan(...) == CALLBACK_SUCCESS)` |
+| E3156-C3 | Reentrancy via flash loan callback | Re-enter protocol before repayment | Is reentrancy guard on `flashLoan` entry? |
+| E3156-C4 | `maxFlashLoan` exceeds actual available balance | Loan issued beyond balance, partial repayment | Is `maxFlashLoan` dynamically checked against real balance? |
+| E3156-H1 | Fee manipulable by admin during loan | Borrower pays more than computed | Is `flashFee` locked at loan initiation? |
+| E3156-H2 | Same token flash loan drains vault in recursive calls | No recursion guard | Is `_flashLoanActive` flag set before callback? |
+
+---
+
+### MODULE 7: ERC-1967 — Proxy Storage Slots
+
+**Slots**: Implementation: `0x360894a13...`, Admin: `0xb53127684...`, Beacon: `0xa3f0ad74e...`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E1967-C1 | Uninitialized implementation allows `selfdestruct` | Proxy bricked permanently | Is `_disableInitializers()` called in implementation constructor? |
+| E1967-C2 | `initialize()` callable by anyone on fresh proxy | Admin/ownership hijack on deployment | Is `initializer` modifier present? Is it called atomically? |
+| E1967-C3 | Storage collision between proxy and implementation | Implementation corrupts proxy admin slot | Check all storage layout; use ERC-7201 namespaced storage |
+| E1967-C4 | Admin can upgrade to malicious implementation | User funds drained by admin | Is there a timelock? Is upgrade multisig-gated? |
+| E1967-H1 | `delegatecall` to zero address (unset implementation) | Proxy silently succeeds empty calls | Is implementation address validated non-zero? |
+| E1967-H2 | Beacon proxy — beacon itself is upgradeable without timelock | All beacon proxies silently upgraded | Is beacon upgrade guarded with timelock + multisig? |
+
+---
+
+### MODULE 8: ERC-2535 — Diamonds (Multi-Facet Proxy)
+
+**Interface**: `diamondCut`, `facets`, `facetFunctionSelectors`, `facetAddresses`, `facetAddress`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E2535-C1 | `diamondCut` callable without access control | Anyone upgrades diamond | Is `LibDiamond.enforceIsContractOwner()` called? |
+| E2535-C2 | Selector clash — two facets share same selector | Wrong facet dispatched, unexpected behavior | Is selector uniqueness enforced in `diamondCut`? |
+| E2535-C3 | Facet storage layout collision | Different facets corrupt each other's storage | Are facets using namespaced storage (ERC-7201/AppStorage)? |
+| E2535-C4 | `fallback` dispatches to zero address | Reverts or no-ops silently | Is facet address validated non-zero before `delegatecall`? |
+| E2535-H1 | `diamondCut` with `Action.Remove` deletes wrong selectors | Protocol functionality permanently bricked | Is the remove set validated against actual registered selectors? |
+| E2535-H2 | Initialization calldata executed on wrong facet | Initialize function re-runs on upgrade | Is `init` address and calldata validated and idempotency enforced? |
+
+---
+
+### MODULE 9: ERC-4337 — Account Abstraction
+
+**Interface**: `validateUserOp`, `IEntryPoint`, `IPaymaster`, `IAccount`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E4337-C1 | `validateUserOp` doesn't validate `userOpHash` | Replayed ops drain account | Is `userOpHash` recomputed and compared? |
+| E4337-C2 | Paymaster sponsors malicious ops | Paymaster funds drained | Does paymaster validate `paymasterData` binding op to paymaster intent? |
+| E4337-C3 | Signature malleability in account validation | Same sig validates multiple ops | Is sig normalized/canonicalized before verification? |
+| E4337-C4 | `nonce` key reuse across parallel tracks | Multi-dimensional nonce bypass | Are nonce keys validated as not aliased? |
+| E4337-H1 | `executeUserOp` callable outside EntryPoint | Bypasses validation entirely | `require(msg.sender == ENTRY_POINT)` on all execute paths? |
+| E4337-H2 | Paymaster `postOp` can fail silently | Gas not refunded, paymaster balance wrong | Is `postOp` revert handled gracefully with inner revert? |
+| E4337-H3 | `aggregateSignatures` with malicious aggregator | Signature verification bypassed | Is aggregator address allowlisted in EntryPoint? |
+
+---
+
+### MODULE 10: ERC-6909 — Minimal Multi-Token Interface
+
+**Interface**: `balanceOf`, `allowance`, `isOperator`, `transfer`, `transferFrom`, `approve`, `setOperator`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E6909-C1 | `transferFrom` with operator bypass — operator has unlimited scope | Operator drains all token IDs | Does operator model correctly scope per-ID or is it truly global? |
+| E6909-C2 | ID=0 used as wildcard in some implementations | All token types drained via ID-0 transfer | Is ID=0 handled as a valid distinct token or blocked? |
+| E6909-H1 | Missing event on `setOperator` | Off-chain monitoring can't track approvals | Is `OperatorSet(owner, operator, approved)` emitted? |
+| E6909-H2 | `allowance` overflow when approving `type(uint256).max` | Allowance decrement skipped (desired), but check logic may differ | Is max allowance correctly handled to skip decrement? |
+
+---
+
+### MODULE 11: ERC-1271 — Contract Signature Validation
+
+**Interface**: `isValidSignature(bytes32 hash, bytes calldata signature) returns (bytes4)`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E1271-C1 | Returns `0x1626ba7e` for any hash when paused/locked | Unauthorized operations execute despite pause | Does pause state affect `isValidSignature`? |
+| E1271-C2 | Replay attack — same hash valid forever | Signature used across multiple protocols | Is the `hash` scoped to a specific operation context? |
+| E1271-C3 | Delegated signer can sign anything | Owner's account drained via delegated signer | Is delegated signer's authority scoped? |
+| E1271-H1 | Recursive `isValidSignature` call | Infinite loop / stack overflow | Is the call chain to external contracts bounded? |
+| E1271-H2 | Magic value returned without actually verifying | Blanket approval | Does implementation actually recover/verify signer? |
+
+---
+
+### MODULE 12: ERC-777 — Advanced Token Standard
+
+**Interface**: `send`, `burn`, `operatorSend`, `operatorBurn`, `authorizeOperator`, `revokeOperator`, `isOperatorFor`, `tokensToSend` hook, `tokensReceived` hook
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E777-C1 | Reentrancy via `tokensReceived` before state update | Classic reentrancy, drain protocol | Are balances updated BEFORE calling `tokensReceived`? |
+| E777-C2 | Default operators can drain all holder funds | Malicious default operator added post-deploy | Are default operators immutable after construction? |
+| E777-C3 | ERC-20 `transfer` + ERC-777 hook double-spend | Protocol handles ERC-20 path without hooks, ignores ERC-777 path | Is the protocol aware token is ERC-777 when integrating? |
+| E777-H1 | Hook reverts can block token transfers (griefing) | User cannot receive tokens | Is hook failure handled gracefully or does it brick accounts? |
+
+---
+
+### MODULE 13: ERC-165 — Interface Detection
+
+**Interface**: `supportsInterface(bytes4 interfaceId) returns (bool)`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E165-C1 | Falsely claims interface support | Protocol trusts interface, calls functions that don't exist | Are all claimed interfaces fully implemented? |
+| E165-C2 | `supportsInterface(0xffffffff)` must return false per spec | Some implementations return true, breaking detection | Is the `0xffffffff` exclusion enforced? |
+| E165-H1 | Gas cost of `supportsInterface` exceeds 30,000 gas | Caller OOG, integration failure | Is detection function gas-efficient (no storage reads in loop)? |
+
+---
+
+### MODULE 14: ERC-5267 — EIP-712 Domain Retrieval
+
+**Interface**: `eip712Domain()` returns `(fields, name, version, chainId, verifyingContract, salt, extensions)`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E5267-C1 | `chainId` field static after deployment | Cross-chain replay on forked networks | Is `chainId` returned as `block.chainid` dynamically? |
+| E5267-C2 | Domain version not incremented after breaking upgrade | Old signatures valid against new logic | Is version bumped on upgrades that affect signed data? |
+| E5267-H1 | Extensions array includes unknown type hashes | Callers can't reconstruct full domain | Are all extension type hashes documented and verifiable? |
+
+---
+
+### MODULE 15: ERC-7540 — Asynchronous ERC-4626 Vaults
+
+**Interface**: `requestDeposit`, `requestRedeem`, `pendingDepositRequest`, `pendingRedeemRequest`, `claimableDepositRequest`, `claimableRedeemRequest`
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E7540-C1 | Request ID collision between users | User A claims User B's redemption | Are request IDs scoped as `(requestId, controller)` pairs? |
+| E7540-C2 | Operator can claim on behalf of controller without consent | Unauthorized claim | Is `isOperator(controller, msg.sender)` validated on claim? |
+| E7540-C3 | `cancelRedeemRequest` not atomic with pending state | Double-claim: cancel + claim race | Is pending request zeroed atomically with cancel? |
+| E7540-H1 | `claimableRedeemRequest` returns stale value | User claims at wrong exchange rate | Is claimable amount updated atomically with rate settlement? |
+
+---
+
+### MODULE 16: ERC-2771 — Meta-Transactions (Trusted Forwarder)
+
+**Interface**: `isTrustedForwarder(address)`, `_msgSender()` override
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E2771-C1 | `_msgSender()` reads last 20 bytes without verifying forwarder | Any contract can forge `msg.sender` | Is `isTrustedForwarder(msg.sender)` checked before appended-address extraction? |
+| E2771-C2 | Multicall + meta-tx sender context confusion | `_msgSender()` returns wrong address in batch | Is `_msgSender()` correctly isolated per sub-call in multicall? |
+| E2771-C3 | Forwarder address hardcoded and non-upgradeable | Cannot revoke compromised forwarder | Is forwarder updatable via governance? |
+| E2771-H1 | Calldata shorter than 20 bytes — `_msgSender()` OOB read | Returns garbage address | Is `msg.data.length >= 20` checked before extraction? |
+
+---
+
+### MODULE 17: ERC-6551 — Token Bound Accounts
+
+**Interface**: `createAccount`, `account` (registry), `executeCall` (TBA), `token` (TBA)
+
+#### Critical Attack Vectors
+
+| ID | Vulnerability | Impact | Check |
+|----|--------------|--------|-------|
+| E6551-C1 | TBA executes calls as NFT owner regardless of NFT state | Stolen/transferred NFT retains active TBA | Is NFT ownership re-verified on each `executeCall`? |
+| E6551-C2 | TBA's `tokenId` can be replayed on different chain | Cross-chain TBA confusion | Is `chainId` included in account address derivation? |
+| E6551-C3 | Registry `createAccount` deterministic — anyone can pre-deploy | Malicious implementation deployed before owner | Is implementation address validated against allowlist? |
+| E6551-H1 | Nested TBAs — NFT owned by TBA creates infinite loop | Gas exhaustion in ownership traversal | Is depth limit enforced in ownership check recursion? |
+
+---
+
+## Phase 3: Cross-ERC Interaction Hazards
+
+### Dangerous ERC Combinations
+
+| Combination | Risk |
+|-------------|------|
+| ERC-777 + ERC-4626 | Vault reentrancy via `tokensReceived` hook |
+| ERC-4626 + ERC-2612 | Permit used to deposit for victim; inflation attack via permit front-run |
+| ERC-1155 + ERC-4337 | Batch transfer inside UserOp bypasses per-token accounting |
+| ERC-2535 + ERC-1967 | Double-proxy storage slot collision |
+| ERC-721 + ERC-6551 + ERC-998 | Circular ownership — NFT owns itself via TBA |
+| ERC-20 + ERC-2771 | `_msgSender()` confusion in `transferFrom` when called via forwarder |
+| ERC-4626 + ERC-7540 | Preview functions return sync values for async pending state |
+
+---
+
+## Phase 4: Mandatory Assumption-Breaking Tests
+
+For every contract under audit, challenge these assumptions:
+
+```
+[ ] "Attacker is always an EOA" 
+    → Test: Can a smart contract exploit the callback interface?
+
+[ ] "Token balance only changes via transfer"
+    → Test: Is rebasing/airdrop/fee mechanism detected?
+
+[ ] "msg.sender is the actual user"  
+    → Test: Is ERC-2771 forwarder spoofing possible?
+
+[ ] "Deployment = initialization"
+    → Test: Can initialize() be called again? Is there a re-init vector?
+
+[ ] "Approved operator is trusted"
+    → Test: Can operator drain ALL token IDs (ERC-1155/6909)?
+
+[ ] "Preview and actual are identical"
+    → Test: Can totalAssets be manipulated between preview and execution?
+
+[ ] "Flash loan is repaid atomically"
+    → Test: Is there a callback that enables state manipulation before repayment?
+
+[ ] "Interface detection is reliable"
+    → Test: Does contract falsely claim supportsInterface?
+
+[ ] "Proxy's implementation is immutable by users"
+    → Test: Is there a storage slot collision path from user inputs?
+```
+
+---
+
+## Phase 5: Severity Scoring
+
+### Critical (Immediate Halt Recommended)
+- Direct loss of user funds with no preconditions
+- Unauthorized minting of tokens
+- Admin key or ownership hijack
+- `initialize()` callable by anyone on deployed proxy
+
+### High (Fix Before Launch)  
+- Reentrancy in token callbacks with economically viable path
+- Signature replay leading to unauthorized approvals
+- Flash loan fee/amount manipulation
+- Vault inflation attack vectors
+- Proxy upgrade without timelock (if holding TVL > $1M)
+
+### Medium (Fix in Next Release)
+- Preview/actual discrepancies exceeding 1 wei
+- Missing return value checks on external token calls
+- Gas griefing via large arrays in batch functions
+
+### Low / Informational
+- Missing events for state changes
+- ERC-165 non-compliance without exploit path
+- Unused functions increasing attack surface
+
+---
+
+## Phase 6: Output Format
+
+```
+=== ERC INTERFACE AUDIT REPORT ===
+
+Contract: [Name]
+Declared Interfaces: [ERC-X, ERC-Y, ERC-Z]
+Auditor: [Date]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL FINDINGS (N)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[C-01] Title
+ERC Reference: ERC-XXXX §Section
+Location: contracts/Foo.sol:Line
+Attack Path:
+  1. Attacker calls X with params Y
+  2. State mutates incorrectly
+  3. Funds extracted at step Z
+PoC Pseudocode:
+  attacker.attack() → reenters deposit() → balance doubled
+Impact: Loss of N ETH / Complete TVL drain
+Fix: [Specific code fix]
+Validation: Confirmed / Not a false positive because [reason]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HIGH FINDINGS (N)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[H-01] ...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INTERFACE COMPLIANCE MATRIX
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+| Interface | Claimed | Implemented | Spec-Compliant | Critical Deviations |
+|-----------|---------|-------------|----------------|---------------------|
+| ERC-20    | ✓       | ✓           | Partial        | Missing return val  |
+| ERC-2612  | ✓       | ✓           | ✗              | Static chainId      |
+...
+```
+
+---
+
+## False Positive Filter
+
+Before marking any finding as valid, verify:
+
+1. **Is the code path reachable?** Trace call graph from external entry point.
+2. **Is the precondition achievable?** Can attacker actually satisfy the condition?
+3. **Is economic impact real?** Would exploitation yield profit after gas costs?
+4. **Is the deviation spec-mandated?** Check the exact ERC wording — not all deviations are vulnerabilities.
+5. **Is it protected elsewhere?** Check if a higher-level guard mitigates the issue.
+
+Only report a finding if all 5 filters pass.
+
+---
+
+## Quick Reference: ERC Module Trigger Map
+
+| When you see... | Load module |
+|----------------|-------------|
+| `IERC20`, `transfer`, `approve` | MODULE 1 |
+| `IERC721`, `ownerOf`, `safeTransferFrom` | MODULE 2 |
+| `IERC1155`, `safeBatchTransferFrom` | MODULE 3 |
+| `IERC4626`, `deposit`, `redeem`, `totalAssets` | MODULE 4 |
+| `permit`, `nonces`, `DOMAIN_SEPARATOR` | MODULE 5 |
+| `flashLoan`, `onFlashLoan`, `maxFlashLoan` | MODULE 6 |
+| `_IMPLEMENTATION_SLOT`, `upgradeTo`, `initialize` | MODULE 7 |
+| `diamondCut`, `facets`, `DiamondStorage` | MODULE 8 |
+| `validateUserOp`, `IEntryPoint`, `UserOperation` | MODULE 9 |
+| `ERC6909`, `isOperator`, multi-token non-1155 | MODULE 10 |
+| `isValidSignature`, `0x1626ba7e` | MODULE 11 |
+| `IERC777`, `tokensReceived`, `send` (not transfer) | MODULE 12 |
+| `supportsInterface` | MODULE 13 |
+| `eip712Domain()` | MODULE 14 |
+| `requestDeposit`, `requestRedeem`, async vault | MODULE 15 |
+| `isTrustedForwarder`, `_msgSender()` override | MODULE 16 |
+| `createAccount`, TokenBoundAccount, ERC6551 | MODULE 17 |
+
+---
+
+## Ready to Audit
+
+Provide the contract code and declare:
+1. Which ERC interfaces are claimed
+2. Whether this is a new deployment or existing protocol
+3. Any known integrations (e.g., "this ERC-4626 vault wraps a fee-on-transfer ERC-20")
+
+I will map every transaction flow, break every developer assumption, and deliver only validated High/Critical findings.
