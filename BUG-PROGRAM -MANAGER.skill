@@ -1,0 +1,282 @@
+---
+name: bug-bounty-program-manager
+description: >
+  Corporate bug bounty program design, management, and vulnerability triage skill based on 
+  John Jackson's "Corporate Cybersecurity: Identifying Risks and the Bug Bounty Program". 
+  Use this skill whenever a user wants to set up, manage, evaluate, or improve a bug bounty 
+  or vulnerability disclosure program. Triggers on: "bug bounty", "VDP", "vulnerability 
+  disclosure", "HackerOne", "Bugcrowd", "triage a report", "assess a vulnerability", 
+  "rate this finding", "scope definition", "safe harbor", "SLA", "CVE responsibility", 
+  "researcher report", "bounty payment", "public disclosure", "program launch", "program 
+  management", or any request to evaluate a security researcher's submission. Also trigger 
+  when asked how to respond to a reported vulnerability, how to determine bounty amounts, 
+  or how to handle a rogue/malicious researcher. Always use this skill when bug bounty or 
+  responsible disclosure topics are involved — even if the user only mentions a specific 
+  platform like HackerOne or Bugcrowd.
+---
+
+# Bug Bounty Program Manager
+
+A structured, corporate-grade skill for designing, launching, operating, and maturing vulnerability disclosure and bug bounty programs. Grounded in Jackson's corporate cybersecurity framework and real-world crowdsourced security practices.
+
+---
+
+## Phase 0: Organizational Readiness Assessment
+
+Before launching any program, assess internal readiness across all teams:
+
+### Security Posture Checklist
+Ask these questions before going live:
+
+**Engineering Teams**
+- Are secure coding practices in place and understood by developers?
+- Can engineering resolve a critical vulnerability within 2–7 days?
+- Is there a clear communication channel between AppSec and engineering?
+
+**Security Departments** (SecOps, Fraud, GRC, Vuln Mgmt, EDR)
+- Does SecOps have an incident response plan for exploit escalation?
+- How does Fraud Prevention handle account takeover bugs?
+- Are compliance requirements (SOC2, PCI, HIPAA) compatible with public disclosure?
+
+**Infrastructure Teams**
+- Can infra patch a server-side exploit within SLA timelines?
+- Is there clear communication between infra and vuln management?
+
+**Legal Department**
+- Is legal aware of and comfortable with bug bounty legal exposure?
+- Is there a defined escalation threshold for engaging legal?
+- Is safe harbor language drafted and reviewed?
+
+**Communications Team**
+- Does comms understand that security researchers will disclose findings publicly?
+- Is there a PR plan for high-severity disclosures?
+
+> **Rule**: Do NOT launch a public program until you can answer all of the above confidently. Start private.
+
+---
+
+## Phase 1: Program Design
+
+### Program Type Selection
+| Type | Best For | Risk Level |
+|---|---|---|
+| **Private (invite-only)** | New programs, limited security maturity | Low — controlled researcher pool |
+| **Public (open)** | Mature programs with fast triage/remediation | High — expect 200+ reports in week 1 |
+| **Hybrid** | Growing programs transitioning from private | Medium |
+| **VDP (no bounty)** | Organizations not ready for monetary rewards | Low — but limits researcher motivation |
+
+**Recommendation**: Always start private. Build process, calibrate SLAs, establish triage workflows. Graduate to public only when consistently hitting private program SLAs.
+
+### Scope Definition
+Scope drives researcher behavior. Be precise.
+
+**Scope formats**:
+- **Wildcard subdomain**: `*.example.com` — all subdomains in scope
+- **Wildcard domain**: `*.example.*` — all TLDs (use cautiously)
+- **Specific path**: `example.com/api/v2` — only this endpoint
+- **Named asset**: Mobile app, specific API, hardware device
+
+**Asset risk rating** (CIA Triad model):
+- **Confidentiality**: Does compromise expose sensitive data?
+- **Integrity**: Can data be modified by an attacker?
+- **Availability**: Can an attacker take the service down?
+
+> RCE = Critical impact on all three dimensions simultaneously. Rate accordingly.
+
+**Standard out-of-scope items** (explicitly document these):
+- DoS / DDoS attacks
+- Social engineering of employees
+- Brute force / rate limiting attacks
+- Account and email enumeration (unless demonstrating clear business impact)
+- Self-XSS (only affects the attacker themselves)
+- Clickjacking without demonstrated impact chain
+- Physical security attacks
+
+---
+
+## Phase 2: Bounty Structure
+
+### Determining Payment Tiers
+| Severity | Typical Range | Criteria |
+|---|---|---|
+| **Critical** | $5,000–$50,000+ | RCE, auth bypass on critical systems, mass data exposure |
+| **High** | $1,000–$10,000 | Significant data access, privilege escalation, account takeover |
+| **Medium** | $200–$2,000 | Limited data exposure, requires chaining |
+| **Low** | $50–$500 | Defense-in-depth issues, hardening gaps |
+| **Informational** | $0–$100 (or swag) | Best practice violations, no exploitability |
+
+**Bonus payment triggers**:
+- Novel exploitation technique
+- Chain of vulnerabilities demonstrating elevated impact
+- High-quality report with full PoC, clear impact, suggested remediation
+- Vulnerability found in recently added or high-value asset
+
+**Non-monetary rewards** (useful for VDP or supplemental):
+- Hall of fame recognition
+- Branded swag, certifications
+- Letters of recommendation for researchers
+
+### Bounty Fairness Principles
+- Don't reduce a bounty after the fact without researcher agreement
+- If a finding is duplicated, pay the first valid reporter
+- If a critical finding is under-scoped but clearly impactful, consider paying out-of-scope at lower rate with researcher notice
+- **The house doesn't always win** — be generous to build researcher trust and loyalty
+
+---
+
+## Phase 3: Legal Foundations
+
+### Safe Harbor Agreement
+Safe harbor protects good-faith researchers from legal retaliation. Include:
+1. Authorization grant for testing within scope
+2. No prosecution commitment for good-faith security research
+3. Coordinated disclosure expectations
+4. Researcher obligations (no data destruction, no accessing user data beyond PoC)
+5. Dispute resolution process
+
+> **Reality check**: Safe harbor is a promise, not a legal shield. Always consult legal before finalizing.
+
+### Handling Rogue Researchers
+If a researcher acts in bad faith (extortion, public disclosure without notice, data theft):
+1. Document everything — timestamps, communications, evidence
+2. Engage legal only as a **last resort** — assume researcher frustration first
+3. Ask: Is this behavior driven by poor communication from your program?
+4. Never publicly shame researchers — it damages your program reputation
+
+---
+
+## Phase 4: SLA Configuration
+
+Researchers watch your SLA metrics. Missing them kills program reputation.
+
+### Resolution SLAs
+| Severity | Target Resolution |
+|---|---|
+| Critical | 2–7 days |
+| High | 7–14 days |
+| Medium | 14–30 days |
+| Low | Best effort |
+| Informational | N/A |
+
+### Triage SLAs
+| Severity | Target Triage |
+|---|---|
+| Critical | 2 business days |
+| High | 5 business days |
+| Medium | 7 business days |
+| Low | 14 business days |
+
+> **Key principle**: Set SLAs you can actually meet. Consistent misses destroy researcher trust faster than having no SLA at all. Start conservative and tighten as your team matures.
+
+---
+
+## Phase 5: Vulnerability Triage & Impact Assessment
+
+### Evaluating a Researcher Report
+
+For every incoming report, run through this checklist:
+
+**Step 1: Verify reproducibility**
+- Can you replicate the exact steps the researcher provided?
+- Is the environment (prod vs. staging) clearly identified?
+
+**Step 2: Assess real-world impact**
+- What can an unauthenticated attacker do with this?
+- Does exploitation require user interaction?
+- What data/functionality is exposed?
+- Can this be chained with other vulnerabilities to elevate impact?
+
+**Step 3: Apply CIA Triad scoring**
+- **Confidentiality**: Is sensitive data exposed?
+- **Integrity**: Can data be modified or corrupted?
+- **Availability**: Can services be disrupted?
+
+**Step 4: Rate the severity**
+Use Bugcrowd VRT or HackerOne CVSS scoring. Don't invent your own scale.
+
+**Step 5: Check for CVE applicability**
+- If the bug exists in a shared component (library, firmware, OS), it may be a zero-day CVE
+- Report CVEs on behalf of the researcher when possible — builds reputation and gives you control of the narrative
+- For hardware CVEs: test across your full product line, not just the reported instance
+- For software CVEs: assess whether auto-update is possible or requires user action
+
+### Real-World Impact Examples from Jackson's Book
+
+**SQL Injection on router login** (scenario from book):
+- Payload: `admin / ' OR '1'='1` → full auth bypass
+- Impact: Attacker gains router admin, can pivot to LAN, modify DNS, intercept traffic
+- Rating: **Critical** — even though LAN-based, business guest networks often lack segmentation
+- CVE: Yes — affects all devices with this firmware, report to manufacturer
+
+**Stored XSS in user profile** (scenario from book):
+- Payload: `<script>alert(1)</script>` as username → triggers on profile view for other users
+- Impact: Session hijacking, credential theft, social engineering at scale
+- Special consideration: If app cannot force updates, users remain vulnerable indefinitely
+- Rating: **High** — requires public disclosure + CVE filing given patch delivery limitations
+
+---
+
+## Phase 6: Platform Configuration
+
+### Bugcrowd Setup Checklist
+- [ ] Name program clearly (company name)
+- [ ] Add all in-scope targets with correct category tags
+- [ ] Enable Bugcrowd VRT (vulnerability rating taxonomy) — don't invent your own
+- [ ] Configure bounty amounts per severity tier
+- [ ] Set safe harbor policy
+- [ ] Define out-of-scope items explicitly
+- [ ] Set response targets (first response, triage, resolution)
+- [ ] Fund bounty pool before launch
+
+### HackerOne Setup Checklist
+- [ ] Add assets with CIA Triad environmental scoring
+- [ ] Configure submit report form (hide only genuinely OOS weakness types)
+- [ ] Set response targets per severity
+- [ ] Configure signal requirements (start strict for new programs)
+- [ ] Set up email forwarding for off-platform submissions
+- [ ] Enable two-factor auth requirement (optional, but avoid if it discourages participation)
+- [ ] Set minimum 100 invited hackers before public launch
+- [ ] Prepare for 200+ reports in week 1 of going public
+
+---
+
+## Phase 7: Public Disclosure Management
+
+### Disclosure Philosophy
+- **Allow disclosure** — it's inevitable and benefits your security reputation
+- **Never weaponize redaction** — only request redaction to prevent active exploitation
+- **Expect journalists** for high-severity findings — prepare PR statements in advance
+- **Chain report disclosure** can cause surges — ensure capacity before permitting
+
+### CVE Reporting Process
+When a CVE-worthy finding is submitted:
+1. Confirm reproducibility and scope of impact
+2. Notify researcher of intent to file CVE on their behalf
+3. If you have a CNA (CVE Numbering Authority): assign directly
+4. If not: submit through MITRE or coordinate with NVD
+5. Coordinate patch timeline with CVE publication
+6. Credit the researcher in the CVE advisory
+
+---
+
+## Phase 8: Program Maturity Model
+
+| Stage | Characteristics | Next Step |
+|---|---|---|
+| **Ad Hoc** | No formal program, researchers contact you randomly | Launch VDP |
+| **Private VDP** | Invite-only, no bounties, basic triage | Add bounty tiers |
+| **Private Bounty** | Paid, invite-only, building SLA consistency | Expand scope, increase researchers |
+| **Public Bounty** | Open to all, consistent SLAs, mature triage | Full public disclosure, CVE program |
+| **Enterprise-Grade** | CNA status, dedicated AppSec team, on-demand pentests | Continuous testing integration |
+
+---
+
+## Program Manager Mindset
+
+**Assume good faith first.** A researcher leaking on social media is almost always frustrated with your communication, not trying to extort you.
+
+**Empathy is a security tool.** When a researcher seems aggressive, put yourself in their shoes — they found something real, they're not getting paid, and they're being ignored.
+
+**Speed = trust.** A fast triage response (even if just "we received your report") builds more goodwill than any bounty amount.
+
+**Disclosure is not your enemy.** A patched vulnerability being publicly disclosed is a marketing asset — it shows your program works.
